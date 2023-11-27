@@ -17,6 +17,7 @@
 
 import math
 from typing import Iterator
+import wandb
 
 from absl import flags
 from acme import specs
@@ -25,14 +26,16 @@ from acme.agents.jax import sac
 from absl import app
 from acme.jax import experiments
 from acme.utils import lp_utils
+import jax
 import jax.random as rand
 import launchpad as lp
 
-from csil.scripts import helpers
-from csil.sil import builder
-from csil.sil import config as sil_config
-from csil.sil import evaluator
-from csil.sil import networks
+import experiment_logger
+import helpers
+from sil import builder
+from sil import config as sil_config
+from sil import evaluator
+from sil import networks
 
 USE_SARSA = True
 
@@ -139,6 +142,8 @@ _CRITIC_PRETRAIN_STEPS = flags.DEFINE_integer(
 _CRITIC_PRETRAIN_LR = flags.DEFINE_float(
     'critic_pretrain_lr', 1e-4, 'Critic pretraining learning rate.'
 )
+_EVAL_BC = flags.DEFINE_bool('eval_bc', False,
+                             'Run evaluator of BC policy for comparison')
 _OFFLINE_FLAG = flags.DEFINE_bool('offline', False, 'Run an offline agent.')
 _EVAL_PER_VIDEO = flags.DEFINE_integer(
     'evals_per_video', 0, 'Video frequency. Disable using 0.'
@@ -146,13 +151,35 @@ _EVAL_PER_VIDEO = flags.DEFINE_integer(
 _NUM_ACTORS = flags.DEFINE_integer(
     'num_actors', 4, 'Number of distributed actors.'
 )
-
+_CHECKPOINTING = flags.DEFINE_bool(
+  'checkpoint', False, 'Save models during training.'
+)
+_WANDB = flags.DEFINE_bool(
+  'wandb', True, 'Use weights and biases logging.'
+)
+_NAME = flags.DEFINE_string('name', 'camera-ready', 'Experiment name')
 
 def _build_experiment_config():
   """Builds a CSIL experiment config which can be executed in different ways."""
-  # Create an environment, grab the spec, and use it to create networks.
 
+  # Create an environment, grab the spec, and use it to create networks.
   task = _ENV_NAME.value
+
+  mode = f'{"off" if _OFFLINE_FLAG.value else "on"}line'
+  name = f'csil_{task}_{mode}'
+  group = (f'{name}, {_NAME.value}, '
+           f'ndemos={_N_DEMONSTRATIONS.value}, '
+           f'alpha={_ENT_COEF.value}')
+  wandb_kwargs = {
+    'project': 'csil',
+    'name': name,
+    'group': group,
+    'tags': ['csil', task, mode, jax.default_backend()],
+    'config': flags.FLAGS._flags(),
+    'mode': 'online' if _WANDB.value else 'disabled',
+  }
+
+  logger_fact = experiment_logger.make_experiment_logger_factory(wandb_kwargs)
 
   make_env, env_spec, make_demonstrations = helpers.get_env_and_demonstrations(
       task, _N_DEMONSTRATIONS.value, use_sarsa=USE_SARSA,
@@ -238,9 +265,7 @@ def _build_experiment_config():
     policy_pretrainers = [offline_policy_pretraining, policy_pretraining]
     critic_dataset = demo_factory
   else:
-    policy_pretrainers = [
-        policy_pretraining,
-    ]
+    policy_pretrainers = [policy_pretraining,]
     critic_dataset = demo_factory
 
   critic_pretraining = sil_config.PretrainingConfig(
@@ -252,6 +277,7 @@ def _build_experiment_config():
   # Construct the agent.
   config_ = sil_config.SILConfig(
       imitation=sil_config.CoherentConfig(
+          alpha=csil_alpha,
           reward_scaling=_RCALE.value,
           refine_reward=_FINETUNE_R.value,
           negative_reward=(
@@ -286,26 +312,31 @@ def _build_experiment_config():
       environment_factory=environment_factory,
       network_factory=network_factory,
       policy_factory=sil_builder.make_policy,
+      logger_factory=logger_fact,
   )
 
-  bc_evaluator_factory = evaluator.bc_evaluator_factory(
-      environment_factory=environment_factory,
-      network_factory=network_factory,
-      policy_factory=sil_builder.make_bc_policy,
-  )
-
+  evaluators = [imitation_evaluator_factory,]
   if _EVAL_PER_VIDEO.value > 0:
     video_evaluator_factory = evaluator.video_evaluator_factory(
         environment_factory=environment_factory,
         network_factory=network_factory,
         policy_factory=sil_builder.make_policy,
         videos_per_eval=_EVAL_PER_VIDEO.value,
+        logger_factory=logger_fact,
     )
-    evaluators = [imitation_evaluator_factory, bc_evaluator_factory,
-                  video_evaluator_factory]
-  else:
-    evaluators = [imitation_evaluator_factory, bc_evaluator_factory]
+    evaluators += [imitation_evaluator_factory,]
 
+  if _EVAL_BC.value:
+    bc_evaluator_factory = evaluator.bc_evaluator_factory(
+        environment_factory=environment_factory,
+        network_factory=network_factory,
+        policy_factory=sil_builder.make_bc_policy,
+        logger_factory=logger_fact,
+    )
+    evaluators += [bc_evaluator_factory,]
+
+  checkpoint_config = (experiments.CheckointingConfig()
+                       if _CHECKPOINTING.value else None)
   if _OFFLINE_FLAG.value:
     make_offline_dataset, _ = helpers.get_offline_dataset(
         task,
@@ -314,7 +345,6 @@ def _build_experiment_config():
         _N_OFFLINE_DATASET.value,
         use_sarsa=USE_SARSA,
     )
-    # Only uses random key, to bake the batch size in.
     make_offline_dataset_ = lambda rk: make_offline_dataset(batch_size, rk)
     return experiments.OfflineExperimentConfig(
         builder=sil_builder,
@@ -325,6 +355,8 @@ def _build_experiment_config():
         max_num_learner_steps=_N_STEPS.value,
         environment_spec=env_spec,
         seed=_SEED.value,
+        logger_factory=logger_fact,
+        checkpointing=checkpoint_config,
     )
   else:
     return experiments.ExperimentConfig(
@@ -334,6 +366,8 @@ def _build_experiment_config():
         evaluator_factories=evaluators,
         seed=_SEED.value,
         max_num_actor_steps=_N_STEPS.value,
+        logger_factory=logger_fact,
+        checkpointing=checkpoint_config,
     )
 
 
@@ -368,4 +402,7 @@ def main(_):
 
 
 if __name__ == '__main__':
+  wandb.setup()
   app.run(main)
+  wandb.finish()
+

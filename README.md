@@ -1,31 +1,102 @@
 # Coherent Soft Imitation Learning
 
-This repository contains an implementation of Coherent Soft Imitation Learning,
-published at NeurIPS 2023. It also contains implementations of two other soft
-imitation learning algorithms: Inverse Soft Q-Learning (IQ-Learn) and Proximal
-Point Imitation Learning (P2IL).
+[![arXiv](https://img.shields.io/badge/stat.ML-arXiv%3A2305.16498-B31B1B.svg)](https://arxiv.org/abs/2305.16498)
+[![Python 3.7+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/release/python-376/)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+<p align=center>
+<img src="https://joemwatson.github.io/csil/files/csil.gif">
+</p>
+
+
+This repository contains an implementation of [Coherent Soft Imitation Learning](https://arxiv.org/abs/2305.16498),
+published at [NeurIPS 2023](https://openreview.net/forum?id=kCCD8d2aEu).
+
+It also contains implementations of two other 'soft'
+imitation learning (SIL) algorithms: [Inverse Soft Q-Learning (IQ-Learn)](https://arxiv.org/abs/2106.12142) and [Proximal
+Point Imitation Learning (PPIL)](https://arxiv.org/abs/2209.10968).
 
 ## Content
-
+The implementation is built on top of [Acme](https://github.com/google-deepmind/acme) and follows their agent structure.
 ```
 .
-├── scripts
-|   ├── helpers.py                   - Helper methods: dataset iterators and environment creation.
-|   ├── run_csil.py                  - Example of running CSIL on continuous control tasks.
-|   ├── run_iqlearn.py               - Example of running IQ-Learn on continuous control tasks.
-|   ├── run_ppil.py                  - Example of running P2IL on continuous control tasks.
-|   └── soft_policy_iteration.ipynb  - Evaluation of SIL algorithms in a discrete tabular setting.
+├── run_csil.py                      - Example of running CSIL on continuous control tasks.
+├── run_iqlearn.py                   - Example of running IQ-Learn on continuous control tasks.
+├── run_ppil.py                      - Example of running PPIL on continuous control tasks.
+├── soft_policy_iteration.ipynb      - Evaluation of SIL algorithms in a discrete tabular setting.
+├── helpers.py                       - Utilities such as dataset iterators and environment creation.
+├── experiment_logger.py             - Implements a Weights & Biases logger within the Acme framework.
 |
 ├── sil
-|   ├── builder.py                   - Creates learner, actor, and policy.
-|   ├── config.py                    - Algorithm-specific configurations.
-|   ├── evaluator.py                 - Creates evaluators and video recorders.
-|   ├── learning.py                  - Implements the SIL learner.
-|   ├── networks.py                  - Defines networks used by SIL algorithms.
+|   ├── config.py                    - Algorithm-specific configurations for soft imitation learning (SIL).
+|   ├── builder.py                   - Creates the learner, actor, and policy.
+|   ├── evaluator.py                 - Creates the evaluators and video recorders.
+|   ├── learning.py                  - Implements the imitation learners.
+|   ├── networks.py                  - Defines the policy, reward and critic networks.
 |   └── pretraining.py               - Implements pre-training for policy and critic.
-|
-├── README.md
-└── requirements.txt                 - Dependencies.
+```
+
+## Usage
+
+Before running any code, first activate the conda environment and set the
+`PYTHONPATH`:
+```bash
+conda activate csil
+export PYTHONPATH=$(pwd)/..
+```
+
+To run CSIL with default settings:
+```bash
+python scripts/run_csil.py
+```
+This runs the online version of CSIL on HalfCheetah-v2.
+
+The experiment configurations for each algorithm (CSIL, IQ-Learn, and PPIL), can
+be adjusted via the flags defined at the start of `run_*.py`.
+
+The available tasks (specified with the `--env_name` flag) are:
+```
+HalfCheetah-v2
+Ant-v2
+Walker2d-v2
+Hopper-v2
+Humanoid-v2
+door-v0         # Adroit hand
+hammer-v0       # Adroit hand
+pen-v0          # Adroit hand
+```
+
+The default setting is online soft imitation learning. To run the offline
+version on the Adroit door task, for example:
+```bash
+python scripts/run_{algo_name}.py --offline=True --env_name=door-v0
+```
+replacing `{algo_name}` with either csil, iqlearn, or ppil.
+
+We have also included a Colab [here](https://colab.research.google.com/github/deepmind/csil/blob/master/scripts/soft_policy_iteration.ipynb) that reproduces
+the discrete grid world experiments shown in the paper, for a range of imitation learning algorithms.
+
+We encourage the use of accelerators (GPUs, TPUs) for CSIL. As it requires a larger policy architecture, it has a slow wallclock time if run only on CPUs.
+
+For a reproduction of the paper's experiment, see this Weights & Biase project. 
+
+### Open issues
+
+[Distribued Acme experiments currently do not finish cleanly, so they appear as 'Crashed' on W&B when they finish successfully.](https://github.com/google-deepmind/acme/issues/312#issue-1990249288)
+
+The robomimic experiments are currently not open-sourced. 
+
+## Citing this work
+
+```bibtex
+@inproceedings{watson2023csil,
+  author       = {Joe Watson and
+                  Sandy H. Huang and
+                  Nicolas Heess},
+  title        = {Coherent Soft Imitation Learning},
+  booktitle    = {Advances in Neural Information Processing Systems},
+  year         = {2023}
+}
 ```
 
 ## Installation
@@ -110,61 +181,6 @@ then you need to install the following in your conda environment and update the
 ```bash
 conda install -c conda-forge gmp
 export CPATH=$CONDA_PREFIX/include
-```
-
-## Usage
-
-Before running any code, first activate the conda environment and set the
-`PYTHONPATH`:
-```bash
-conda activate csil
-export PYTHONPATH=$(pwd)/..
-```
-
-To run CSIL with default settings:
-```bash
-python scripts/run_csil.py
-```
-This runs the online version of CSIL on HalfCheetah-v2.
-
-The experiment configurations for each algorithm (CSIL, IQ-Learn, and PPIL), can
-be adjusted via the flags defined at the start of `run_*.py`.
-
-The available tasks (specified with the `--env_name` flag) are:
-```
-HalfCheetah-v2
-Ant-v2
-Walker2d-v2
-Hopper-v2
-Humanoid-v2
-door-v0         # Adroit hand
-hammer-v0       # Adroit hand
-pen-v0          # Adroit hand
-```
-
-The default setting is online soft imitation learning. To run the offline
-version on the Adroit door task, for example:
-```bash
-python scripts/run_{algo_name}.py --offline=True --env_name=door-v0
-```
-replacing `{algo_name}` with either csil, iqlearn, or ppil.
-
-We have also included a Colab [here](https://colab.research.google.com/github/deepmind/csil/blob/master/scripts/soft_policy_iteration.ipynb) that reproduces
-the discrete grid world experiments shown in the paper, for a range of soft
-imitation learning and IRL algorithms.
-
-
-## Citing this work
-
-```bibtex
-@inproceedings{watson2023csil,
-  author       = {Joe Watson and
-                  Sandy H. Huang and
-                  Nicolas Heess},
-  title        = {Coherent Soft Imitation Learning},
-  booktitle    = {Advances in Neural Information Processing Systems},
-  year         = {2023}
-}
 ```
 
 ## License and disclaimer

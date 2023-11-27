@@ -21,13 +21,15 @@ from acme.agents.jax import sac
 from absl import app
 from acme.jax import experiments
 from acme.utils import lp_utils
+import jax
 import launchpad as lp
 
-from csil.scripts import helpers
-from csil.sil import builder
-from csil.sil import config as sil_config
-from csil.sil import evaluator
-from csil.sil import networks
+import experiment_logger
+import helpers
+from sil import builder
+from sil import config as sil_config
+from sil import evaluator
+from sil import networks
 
 
 _DIST_FLAG = flags.DEFINE_bool(
@@ -134,13 +136,36 @@ _LOSS_TYPE = flags.DEFINE_enum(
     'Define regression loss type.',
 )
 _OFFLINE_FLAG = flags.DEFINE_bool('offline', False, 'Run an offline agent.')
-
+_EVAL_BC = flags.DEFINE_bool(
+  'eval_bc', False, 'Run evaluator of BC policy for comparison')
+_CHECKPOINTING = flags.DEFINE_bool(
+  'checkpoint', False, 'Save models during training.'
+)
+_WANDB = flags.DEFINE_bool(
+  'wandb', True, 'Use weights and biases logging.'
+)
+_NAME = flags.DEFINE_string('name', 'camera-ready', 'Experiment name')
 
 def build_experiment_config():
   """Builds a P2IL experiment config which can be executed in different ways."""
   # Create an environment, grab the spec, and use it to create networks.
 
   task = _ENV_NAME.value
+
+  mode = f'{"off" if _OFFLINE_FLAG.value else "on"}line'
+  name = f'ppil_{task}_{mode}'
+  group = (f'{name}, {_NAME.value}, '
+           f'ndemos={_N_DEMONSTRATIONS.value}, '
+           f'alpha={_ENT_COEF.value}')
+  wandb_kwargs = {
+    'project': 'csil',
+    'name': name,
+    'group': group,
+    'tags': ['ppil', task, mode, jax.default_backend()],
+    'mode': 'online' if _WANDB.value else 'disabled',
+  }
+
+  logger_fact = experiment_logger.make_experiment_logger_factory(wandb_kwargs)
 
   make_env, env_spec, make_demonstrations = helpers.get_env_and_demonstrations(
       task, _N_DEMONSTRATIONS.value
@@ -225,20 +250,22 @@ def build_experiment_config():
       environment_factory=environment_factory,
       network_factory=network_factory,
       policy_factory=sil_builder.make_policy,
+      logger_factory=logger_fact,
   )
 
-  if _PRETRAIN_BC.value:
+  evaluators = [imitation_evaluator_factory,]
+
+  if _PRETRAIN_BC.value and _EVAL_BC.value:
     bc_evaluator_factory = evaluator.bc_evaluator_factory(
         environment_factory=environment_factory,
         network_factory=network_factory,
         policy_factory=sil_builder.make_policy,
+        logger_factory=logger_fact,
     )
-    evaluators = [bc_evaluator_factory, imitation_evaluator_factory]
-  else:
-    evaluators = [
-        imitation_evaluator_factory,
-    ]
+    evaluators  += [bc_evaluator_factory,]
 
+  checkpoint_config = (experiments.CheckointingConfig()
+                       if _CHECKPOINTING.value else None)
   if _OFFLINE_FLAG.value:
     make_dataset, _ = helpers.get_offline_dataset(
         task, env_spec, _N_DEMONSTRATIONS.value, _N_OFFLINE_DATASET.value
@@ -254,6 +281,8 @@ def build_experiment_config():
         max_num_learner_steps=_N_STEPS.value,
         environment_spec=env_spec,
         seed=_SEED.value,
+        logger_factory=logger_fact,
+        checkpointing=checkpoint_config,
     )
   else:
     return experiments.ExperimentConfig(
@@ -263,6 +292,8 @@ def build_experiment_config():
         evaluator_factories=evaluators,
         seed=_SEED.value,
         max_num_actor_steps=_N_STEPS.value,
+        logger_factory=logger_fact,
+        checkpointing=checkpoint_config,
     )
 
 

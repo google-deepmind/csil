@@ -37,9 +37,10 @@ import jax.numpy as jnp
 import numpy as np
 import tensorflow_probability.substrates.jax as tfp
 
-from csil.sil import config as sil_config
+from sil import config as sil_config
 
 tfd = tfp.distributions
+tfb = tfp.bijectors
 
 
 class PolicyArchitectures(enum.Enum):
@@ -553,14 +554,19 @@ class StationaryHeteroskedasticNormalTanhDistribution(StationaryFeatures):
         init=hk.initializers.Constant(0.0),
     )
 
-    scale_cross_weights_sqrt = hk.get_parameter(
+    # Parameterize the PSD matrix in lower triangular form as a 'raw' vector.
+    # This minimizes the memory footprint to between 50-75% of the full matrix.
+    n_sqrt = self.feature_dimension * (self.feature_dimension + 1) // 2
+    scale_cross_weights_sqrt_raw = hk.get_parameter(
         'scale_cross_weights_sqrt',
-        [self.output_dimension, self.feature_dimension, self.feature_dimension],
-        init=hk.initializers.Identity(gain=1.0),
+        [self.output_dimension, n_sqrt],
+        init=hk.initializers.Constant(0.0),
     )
-
+    # convert vector into a lower triagular matrix with exponentiated diagonal,
+    # so a vector of zeros becomes the identity matrix.
+    b = tfb.FillScaleTriL(diag_bijector=tfb.Exp(), diag_shift=None)
+    scale_cross_weights_sqrt = jax.vmap(b.forward)(scale_cross_weights_sqrt_raw)
     loc = features @ loc_weights
-    scale_cross_weights_sqrt = jnp.tril(scale_cross_weights_sqrt)
     # Cholesky decompositon: A = LL^T where L is lower triangular
     # Variance is diagonal of x @ A @ x.T = x @ L @ L.T @ x.T
     # so first compute x @ L per output d

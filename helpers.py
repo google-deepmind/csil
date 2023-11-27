@@ -31,7 +31,7 @@ import rlds
 import tensorflow as tf
 import tree
 
-from csil.sil import learning
+from sil import learning
 
 
 ImitationIterator = Callable[

@@ -21,13 +21,15 @@ from acme.agents.jax import sac
 from absl import app
 from acme.jax import experiments
 from acme.utils import lp_utils
+import jax
 import launchpad as lp
 
-from csil.scripts import helpers
-from csil.sil import builder
-from csil.sil import config as sil_config
-from csil.sil import evaluator
-from csil.sil import networks
+import experiment_logger
+import helpers
+from sil import builder
+from sil import config as sil_config
+from sil import evaluator
+from sil import networks
 
 
 _DIST_FLAG = flags.DEFINE_bool(
@@ -49,7 +51,7 @@ _EVAL_RATIO = flags.DEFINE_integer(
     'eval_every', 5_000, 'How often to run evaluation.'
 )
 _N_EVAL_EPS = flags.DEFINE_integer(
-    'evaluation_episodes', 10, 'Evaluation episodes.'
+    'evaluation_episodes', 1, 'Evaluation episodes.'
 )
 _N_DEMOS = flags.DEFINE_integer(
     'num_demonstrations', 25, 'Number of demonstration trajectories.'
@@ -88,7 +90,7 @@ _CRITIC_NETWORK = flags.DEFINE_multi_integer(
     'critic_network', [256, 256], 'Define critic architecture.'
 )
 _POLICY_NETWORK = flags.DEFINE_multi_integer(
-    'policy_network', [256, 256], 'Define policy architecture.'
+    'policy_network', [256, 256, 12, 256], 'Define policy architecture.'
 )
 _POLICY_MODEL = flags.DEFINE_enum(
     'policy_model',
@@ -126,16 +128,40 @@ _LOSS_TYPE = flags.DEFINE_enum(
 _LAYERNORM = flags.DEFINE_bool(
     'policy_layer_norm', False, 'Use layer norm for first layer of the policy.'
 )
+_EVAL_BC = flags.DEFINE_bool('eval_bc', False,
+                             'Run evaluator of BC policy for comparison')
 _EVAL_PER_VIDEO = flags.DEFINE_integer(
     'evals_per_video', 0, 'Video frequency. Disable using 0.'
 )
+_CHECKPOINTING = flags.DEFINE_bool(
+  'checkpoint', False, 'Save models during training.'
+)
+_WANDB = flags.DEFINE_bool(
+  'wandb', True, 'Use weights and biases logging.')
 
+_NAME = flags.DEFINE_string('name', 'camera-ready', 'Experiment name')
 
 def _build_experiment_config():
   """Builds an IQ-Learn experiment config which can be executed in different ways."""
   # Create an environment, grab the spec, and use it to create networks.
 
   task = _ENV_NAME.value
+
+  mode = f'{"off" if _OFFLINE_FLAG.value else "on"}line'
+  name = f'iqlearn_{task}_{mode}'
+  group = (f'{name}, {_NAME.value}, '
+           f'ndemos={_N_DEMOS.value}, '
+           f'alpha={_ENT_COEF.value}')
+  wandb_kwargs = {
+    'project': 'csil',
+    'name': name,
+    'group': group,
+    'tags': ['iqlearn', task, mode, jax.default_backend()],
+    'config': flags.FLAGS._flags(),
+    'mode': 'online' if _WANDB.value else 'disabled',
+  }
+
+  logger_fact = experiment_logger.make_experiment_logger_factory(wandb_kwargs)
 
   make_env, env_spec, make_demonstrations = helpers.get_env_and_demonstrations(
       task, _N_DEMOS.value, use_sarsa=False
@@ -213,19 +239,19 @@ def _build_experiment_config():
       environment_factory=environment_factory,
       network_factory=network_factory,
       policy_factory=sil_builder.make_policy,
+      logger_factory=logger_fact,
   )
 
-  if _PRETRAIN_BC.value:
+  evaluators = [imitation_evaluator_factory,]
+
+  if _PRETRAIN_BC.value and _EVAL_BC.value:
     bc_evaluator_factory = evaluator.bc_evaluator_factory(
         environment_factory=environment_factory,
         network_factory=network_factory,
         policy_factory=sil_builder.make_policy,
+        logger_factory=logger_fact,
     )
-    evaluators = [bc_evaluator_factory, imitation_evaluator_factory]
-  else:
-    evaluators = [
-        imitation_evaluator_factory,
-    ]
+    evaluators += [bc_evaluator_factory,]
 
   if _EVAL_PER_VIDEO.value > 0:
     video_evaluator_factory = evaluator.video_evaluator_factory(
@@ -233,9 +259,12 @@ def _build_experiment_config():
         network_factory=network_factory,
         policy_factory=sil_builder.make_policy,
         videos_per_eval=_EVAL_PER_VIDEO.value,
+        logger_factory=logger_fact,
     )
     evaluators += [video_evaluator_factory]
 
+  checkpoint_config = (experiments.CheckointingConfig()
+                       if _CHECKPOINTING.value else None)
   if _OFFLINE_FLAG.value:
     # Note: For offline learning, the dataset needs to contain the offline and
     # expert data, so make_demonstrations isn't used and make_dataset combines
@@ -258,6 +287,8 @@ def _build_experiment_config():
         max_num_learner_steps=_N_STEPS.value,
         environment_spec=env_spec,
         seed=_SEED.value,
+        logger_factory=logger_fact,
+        checkpointing=checkpoint_config,
     )
   else:  # Online.
     return experiments.ExperimentConfig(
@@ -267,8 +298,9 @@ def _build_experiment_config():
         evaluator_factories=evaluators,
         seed=_SEED.value,
         max_num_actor_steps=_N_STEPS.value,
+        logger_factory=logger_fact,
+        checkpointing=checkpoint_config,
     )
-
 
 def main(_):
   config = _build_experiment_config()

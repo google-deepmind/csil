@@ -46,8 +46,8 @@ import jax.numpy as jnp
 import numpy as np
 import tree
 
-from csil.sil import config as sil_config
-from csil.sil import networks as sil_networks
+from sil import config as sil_config
+from sil import networks as sil_networks
 
 
 N_EVALS_PER_VIDEO = 1

@@ -15,6 +15,7 @@
 
 """Soft imitation learning learner implementation."""
 
+from __future__ import annotations
 import time
 from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple
 
@@ -29,9 +30,12 @@ from jax import lax
 import jax.numpy as jnp
 import optax
 
-from csil.sil import config as sil_config
-from csil.sil import networks as sil_networks
-from csil.sil import pretraining
+from sil import config as sil_config
+from sil import networks as sil_networks
+from sil import pretraining
+
+# useful for analysis and comparing algorithms
+MONITOR_BC_METRICS = False
 
 
 class ImitationSample(NamedTuple):
@@ -83,7 +87,9 @@ class SILLearner(acme.Learner):
       policy_pretraining: Optional[List[sil_config.PretrainingConfig]] = None,
       critic_pretraining: Optional[sil_config.PretrainingConfig] = None,
       counter: Optional[counting.Counter] = None,
-      logger: Optional[loggers.Logger] = None,
+      learner_logger: Optional[loggers.Logger] = None,
+      policy_pretraining_loggers: Optional[List[loggers.Logger]] = None,
+      critic_pretraining_logger: Optional[loggers.Logger] = None,
       num_sgd_steps_per_step: int = 1,
   ):
     """Initialize the soft imitation learning learner.
@@ -111,7 +117,9 @@ class SILLearner(acme.Learner):
       policy_pretraining: Optional config for pretraining policy
       critic_pretraining: Optional config for pretraining critic
       counter: counter object used to keep track of steps.
-      logger: logger object to be used by learner.
+      learner_logger: logger object to be used by learner.
+      policy_pretraining_loggers: logger objects to be used by the policy pretraining.
+      critic_pretraining_logger: logger object to be used by critic pretraining.
       num_sgd_steps_per_step: number of sgd steps to perform per learner 'step'.
     """
 
@@ -172,6 +180,7 @@ class SILLearner(acme.Learner):
               policy=policy_,
               learning_rate=pt.learning_rate,
               num_steps=pt.steps,
+              logger=policy_pretraining_loggers[i],
               name=f'{i}',
           )
           bc_policy_params += [params,]
@@ -222,6 +231,7 @@ class SILLearner(acme.Learner):
             discount_factor=discount,
             num_steps=critic_pretraining.steps,
             learning_rate=critic_pretraining.learning_rate,
+            logger=critic_pretraining_logger,
         )
       else:
         critic_params = networks.critic_network.init(key_q)
@@ -359,7 +369,8 @@ class SILLearner(acme.Learner):
         demonstration_transitions: types.Transition,
         online_transitions: types.Transition,
         key: networks_lib.PRNGKey,
-    ) -> Tuple[jnp.ndarray, Dict[str, float | jnp.ndarray]]:
+    ) -> Tuple[jnp.ndarray, Dict[str, float | jnp.Array]]:
+
       def action_sample(
           observation: jnp.ndarray,
           action_key: jax.Array,
@@ -389,22 +400,6 @@ class SILLearner(acme.Learner):
       q_mode = networks.critic_network.apply(
           q_params, observation, action_mode).min(axis=-1)
 
-      # For SAC's tanh policy, the minimizing modal MSE and maximizing
-      # loglikelihood do not appear to be mutually guaranteed, so we optimize
-      # for both.
-      # Incorporate BC MSE loss from TD3+BC.
-      # https://arxiv.org/abs/2106.06860
-      expert_se = (expert_mode - demonstration_transitions.action) ** 2
-      bc_loss_mean = 0.5 * expert_se.mean() * jnp.abs(q).mean()
-      # Also incorporate a log-likelihood, which should be similar in value to
-      # the entropy as they are constructed in similar ways, so use alpha to
-      # weight. This is like maximum likelihood with an entropy bonus.
-      # See https://proceedings.mlr.press/v97/jacq19a/jacq19a.pdf Section 5.2.
-      expert_demo_log_prob = networks.log_prob(
-          expert_dist, demonstration_transitions.action
-      )
-      bc_loss_mean += -alpha * expert_demo_log_prob.mean()
-
       if use_policy_prior:
         dist_bc = networks.bc_policy_network.apply(
             bc_policy_params, observation
@@ -424,8 +419,27 @@ class SILLearner(acme.Learner):
         entropy_reg = alpha * kl
 
       actor_loss = entropy_reg - q.mean()
+
       if actor_bc_loss:
-        actor_loss = actor_loss + bc_loss_mean
+
+        # For SAC's tanh policy, the minimizing modal MSE and maximizing
+        # loglikelihood do not appear to be mutually guaranteed, so we optimize
+        # for both.
+        # Incorporate BC MSE loss from TD3+BC.
+        # https://arxiv.org/abs/2106.06860
+        expert_se = (expert_mode - demonstration_transitions.action) ** 2
+        bc_loss_mean = 0.5 * expert_se.mean() * jnp.abs(q).mean()
+
+        # Also incorporate a log-likelihood, which should be similar in value to
+        # the entropy as they are constructed in similar ways, so use alpha to
+        # weight. This is like maximum likelihood with an entropy bonus.
+        # See https://proceedings.mlr.press/v97/jacq19a/jacq19a.pdf Section 5.2.
+        expert_demo_log_prob = networks.log_prob(
+            expert_dist, demonstration_transitions.action
+        )
+        bc_loss_mean += -alpha * expert_demo_log_prob.mean()
+
+        actor_loss += bc_loss_mean
 
       metrics = {
           'actor_q': q.mean(),
@@ -528,51 +542,39 @@ class SILLearner(acme.Learner):
       metrics.update(critic_loss_metrics)
       metrics.update(actor_loss_metrics)
 
-      # Check entropy for metrics.
-      def policy_entropy(state, params):
-        action_dist = networks.policy_network.apply(params, state)
-        action = action_dist.sample(seed=key)
-        return -networks.log_prob(action_dist, action).mean()
+      if MONITOR_BC_METRICS:
+        # During training, expert actions should become / stay high likelihood.
+        expert_action_dist = networks.policy_network.apply(
+            policy_params, sample.demonstration_sample.observation
+        )
+        samp = expert_action_dist.sample(seed=key)
+        expert_ent_approx = -networks.log_prob(expert_action_dist, samp).mean()
+        expert_llhs = networks.log_prob(
+            expert_action_dist, sample.demonstration_sample.action
+        )
+        expert_se = (
+            expert_action_dist.mode() - sample.demonstration_sample.action
+        ) ** 2
+        online_action_dist = networks.policy_network.apply(
+            policy_params, sample.online_sample.observation
+        )
+        samp = online_action_dist.sample(seed=key)
+        online_ent_approx = -networks.log_prob(online_action_dist, samp).mean()
+        online_llh = networks.log_prob(
+            online_action_dist, sample.online_sample.action
+        ).mean()
+        online_se = (online_action_dist.mode() - sample.online_sample.action) ** 2
 
-      expert_ent = policy_entropy(
-          sample.demonstration_sample.observation, policy_params
-      )
-      online_ent = policy_entropy(
-          sample.online_sample.observation, policy_params
-      )
-      ent_metrics = {
-          'expert_ent': expert_ent,
-          'online_ent': online_ent,
-      }
-
-      metrics.update(ent_metrics)
-
-      # During training, expert actions should become high likelihood.
-      expert_action_dist = networks.policy_network.apply(
-          policy_params, sample.demonstration_sample.observation
-      )
-      expert_llhs = networks.log_prob(
-          expert_action_dist, sample.demonstration_sample.action
-      )
-      expert_se = (
-          expert_action_dist.mode() - sample.demonstration_sample.action
-      ) ** 2
-      online_action_dist = networks.policy_network.apply(
-          policy_params, sample.online_sample.observation
-      )
-      online_llh = networks.log_prob(
-          online_action_dist, sample.online_sample.action
-      ).mean()
-      online_se = (online_action_dist.mode() - sample.online_sample.action) ** 2
-
-      metrics.update({
-          'expert_llh_mean': expert_llhs.mean(),
-          'expert_llh_max': expert_llhs.max(),
-          'expert_llh_min': expert_llhs.min(),
-          'expert_mse': expert_se.mean(),
-          'online_llh': online_llh,
-          'online_mse': online_se.mean(),
-      })
+        metrics.update({
+            'expert_llh_mean': expert_llhs.mean(),
+            'expert_llh_max': expert_llhs.max(),
+            'expert_llh_min': expert_llhs.min(),
+            'expert_mse': expert_se.mean(),
+            'online_llh': online_llh,
+            'online_mse': online_se.mean(),
+            'expert_ent': expert_ent_approx,
+            'online_ent': online_ent_approx,
+        })
 
       new_state = TrainingState(
           policy_optimizer_state=policy_optimizer_state,
@@ -607,7 +609,7 @@ class SILLearner(acme.Learner):
 
     # General learner book-keeping and loggers.
     self._counter = counter or counting.Counter()
-    self._logger = logger or loggers.make_default_logger(
+    self._logger = learner_logger or loggers.make_default_logger(
         'learner',
         asynchronous=True,
         serialize_fn=utils.fetch_devicearray,
