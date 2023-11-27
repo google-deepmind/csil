@@ -12,8 +12,6 @@ envlogger[tfds]
 flax==0.6.4
 gym<0.24.0
 ipython
-jax==0.4.3
-jaxlib==0.4.3
 matplotlib
 notebook
 numpy
@@ -26,3 +24,4 @@ tensorflow==2.8.0
 tensorflow-datasets==4.6.0
 tensorflow_probability==0.15.0
 tqdm
+wandb
