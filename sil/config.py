@@ -485,11 +485,10 @@ class CoherentConfig(SoftImitationConfig):
         online_log_ratio = online_reward + self.reward_scaling * MAX_REWARD
       else:
         online_log_ratio = online_reward
-      safe_online_log_ratio = jnp.maximum(online_log_ratio, -5.0 * self.alpha)
+      safe_online_log_ratio = jnp.maximum(online_log_ratio, -5.0)
       # the estimator is log r + 1/r - 1, and the reward is alpha log r
       policy_kl_est = (
-          self.alpha * (jnp.exp(-safe_online_log_ratio / self.alpha) - 1.)
-          + online_log_ratio
+          jnp.exp(-safe_online_log_ratio) - 1. + online_log_ratio
       ).mean()
 
       def non_batch_state_action_value_fn(s, a):
