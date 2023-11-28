@@ -73,7 +73,7 @@ python scripts/run_{algo_name}.py --offline=True --env_name=door-v0
 ```
 replacing `{algo_name}` with either csil, iqlearn, or ppil.
 
-We have also included a Colab [here](https://colab.research.google.com/github/deepmind/csil/blob/master/scripts/soft_policy_iteration.ipynb) that reproduces
+We have also included a Colab [here](https://colab.research.google.com/github/deepmind/csil/blob/master/soft_policy_iteration.ipynb) that reproduces
 the discrete grid world experiments shown in the paper, for a range of imitation learning algorithms.
 
 We highly encourage the use of accelerators (i.e. GPUs, TPUs) for CSIL. As CSIL requires a larger policy architecture, it has a slow wallclock time if run only on CPUs.
