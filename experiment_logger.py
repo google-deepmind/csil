@@ -15,7 +15,7 @@
 
 """Loggers for experiments."""
 
-from typing import Any, Callable, Dict, List, Mapping, Optional, Union
+from typing import Any, Callable, Dict, Mapping, Optional
 
 import logging
 import time
@@ -33,20 +33,14 @@ class WeightsAndBiasesLogger(base.Logger):
 
   def __init__(
       self,
-      logger: Any,
+      logger: wandb.sdk.wandb_run.Run,
       label: str = '',
       time_delta: float = 0.0,
   ):
-    """Initializes the Weights And Biases logger.
+    """Initializes the Weights And Biases wrapper for Acme.
 
     Args:
-      project: Project name
-      entity: Weights and Biases account name string
-      name: string to describe experiment
-      group: string to describe group properties, e.g. hyperparameters
-      config: a dictionary-like object for saving experiment parameters
-      tags: a list of strings for organizing experiments
-      mode: string that is 'online' or 'disabled'
+      logger: Weights & Biases logger instances
       label: label string to use when logging.
       serialize_fn: function to call which transforms values into a str.
       time_delta: How often (in seconds) to write values. This can be used to
@@ -74,7 +68,7 @@ class WeightsAndBiasesLogger(base.Logger):
 
 def make_logger(
     label: str,
-    wandb_logger: Any,
+    wandb_logger: wandb.sdk.wandb_run.Run,
     steps_key: str = 'steps',
     save_data: bool = False,
     time_delta: float = 1.0,
@@ -86,6 +80,7 @@ def make_logger(
 
   Args:
     label: Name to give to the logger.
+    wandb_logger: Weights and Biases logger instance.
     save_data: Whether to persist data.
     time_delta: Time (in seconds) between logging events.
     asynchronous: Whether the write function should block or not.
@@ -121,9 +116,20 @@ def make_logger(
   return logger
 
 
-def make_experiment_logger_factory(wandb_kwargs = Dict[str, Any]):
+def make_experiment_logger_factory(
+        wandb_kwargs = Dict[str, Any]
+  ) -> Callable[[str, Optional[str], int], base.Logger]:
+  """Makes an Acme logger factory.
 
+  Args:
+    wandb_kwargs: Dictionary of keywork arguments for wandb.init().
 
+  Returns:
+    A logger factory function.
+  """
+
+  # In the distributed setting, it is better to initialize the logger once and pickle,
+  # than to initialize the W&B logging in each process.
   wandb_logger = wandb.init(
     **wandb_kwargs,
   )
