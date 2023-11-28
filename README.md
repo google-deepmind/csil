@@ -9,12 +9,12 @@
 </p>
 
 
-This repository contains an implementation of [Coherent Soft Imitation Learning](https://arxiv.org/abs/2305.16498),
+This repository contains an implementation of [coherent soft imitation learning (CSIL)](https://arxiv.org/abs/2305.16498),
 published at [NeurIPS 2023](https://openreview.net/forum?id=kCCD8d2aEu).
 
-It also contains implementations of two other 'soft'
-imitation learning (SIL) algorithms: [Inverse Soft Q-Learning (IQ-Learn)](https://arxiv.org/abs/2106.12142) and [Proximal
-Point Imitation Learning (PPIL)](https://arxiv.org/abs/2209.10968).
+We also provide implementations of other 'soft'
+imitation learning (SIL) algorithms: [Inverse soft Q-learning (IQ-Learn)](https://arxiv.org/abs/2106.12142) and [proximal
+point imitation learning (PPIL)](https://arxiv.org/abs/2209.10968).
 
 ## Content
 The implementation is built on top of [Acme](https://github.com/google-deepmind/acme) and follows their agent structure.
@@ -76,9 +76,11 @@ replacing `{algo_name}` with either csil, iqlearn, or ppil.
 We have also included a Colab [here](https://colab.research.google.com/github/deepmind/csil/blob/master/scripts/soft_policy_iteration.ipynb) that reproduces
 the discrete grid world experiments shown in the paper, for a range of imitation learning algorithms.
 
-We encourage the use of accelerators (GPUs, TPUs) for CSIL. As it requires a larger policy architecture, it has a slow wallclock time if run only on CPUs.
+We highly encourage the use of accelerators (i.e. GPUs, TPUs) for CSIL. As CSIL requires a larger policy architecture, it has a slow wallclock time if run only on CPUs.
 
-For a reproduction of the paper's experiment, see this Weights & Biase project. 
+For a reproduction of the paper's experiment, [see this Weights & Biases project](https://wandb.ai/jmw125/csil/workspace).
+
+The additional imitiation learning baselines shown in the paper [are available in Acme](https://github.com/google-deepmind/acme/tree/master/examples/baselines/imitation). 
 
 ### Open issues
 
@@ -115,17 +117,27 @@ activate the conda environment:
 conda create --name csil python=3.9
 conda activate csil
 ```
-
-Then install `pip` and use it to install all the dependencies:
+CSIL is written in JAX, so first install the correct version of JAX for your system by [following the installation instructions](https://jax.readthedocs.io/en/latest/installation.html).
+Acme requires `jax 0.4.3` and will install that version. This may need to be uninstalled for a CUDA-based JAX installation, e.g.
 ```bash
-conda install pip
-pip install -r requirements.txt
+pip install jax==0.4.7 https://storage.googleapis.com/jax-releases/cuda12/jaxlib-0.4.7+cuda12.cudnn88-cp39-cp39-manylinux2014_x86_64.whl
 ```
 
 MuJoCo must also be installed, in order to load the environments. Please follow
 the instructions [here](https://github.com/openai/mujoco-py#install-mujoco) to
 install the MuJoCo binary and place it in a directory where `mujoco-py` can find
 it.
+This installation uses `mujoco200`, `gym < 0.24.0` and `mujoco-py 2.0.2.5` for compatibility reasons.
+
+Then install `pip` and use it to install all the dependencies:
+```bash
+pip install -r requirements.txt
+```
+To verify the installation, run
+```bash
+python -c "import jax.numpy as jnp; print(jnp.ones((1,)).device); import acme; import mujoco_py; import gym; print(gym.make('HalfCheetah-v2').reset())"
+```
+If this fails, follow the guidance below. 
 
 ## Troubleshooting
 
@@ -182,6 +194,16 @@ then you need to install the following in your conda environment and update the
 conda install -c conda-forge gmp
 export CPATH=$CONDA_PREFIX/include
 ```
+If you get the error
+```commandline
+ImportError: ../lib/libstdc++.so.6: version `GLIBCXX_3.4.30' not found (required by /lib/x86_64-linux-gnu/libLLVM-15.so.1)
+```
+try
+```commandline
+mv libstdc++.so.6 libstdc++.so.6.old
+ln -s /usr/lib/x86_64-linux-gnu/libstdc++.so.6 libstdc++.so.6
+```
+according to [this advice](https://stackoverflow.com/a/73708979).
 
 ## License and disclaimer
 
