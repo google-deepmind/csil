@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 <p align=center>
-<img src="https://joemwatson.github.io/csil/files/csil.gif">
+<img src="/assets/csil.gif?raw=true" width="750px">
 </p>
 
 
