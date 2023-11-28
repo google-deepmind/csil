@@ -211,40 +211,12 @@ class InverseSoftQConfig(SoftImitationConfig):
       # See code implementation IQ-Learn/iq_learn/iq.py
       agent_loss = 0.5 * (online_reward**2).mean()
 
-      # For metrics.
-      expert_q = state_action_value_fn(
-          demonstration_transitions.observation,
-          demonstration_transitions.action,
-      )
-      expert_v = value_fn(demonstration_transitions.observation, key_v)
-
-      online_q = state_action_value_fn(
-          online_transitions.observation, online_transitions.action
-      )
-      online_v = value_fn(online_transitions.observation, key_v)
-
       metrics = {
           "expert_reward": expert_reward.mean(),
           "online_reward": online_reward.mean(),
-          "expert_reward_max": expert_reward.max(),
-          "online_reward_max": online_reward.max(),
-          "expert_reward_min": expert_reward.min(),
-          "online_reward_min": online_reward.min(),
           "value_reg": value_reg,
           "expert_loss": expert_loss,
           "online_reg": agent_loss,
-          "expert_q": expert_q.mean(),
-          "online_q": online_q.mean(),
-          "expert_q_max": expert_q.max(),
-          "online_q_max": online_q.max(),
-          "expert_q_min": expert_q.min(),
-          "online_q_min": online_q.min(),
-          "expert_v": expert_v.mean(),
-          "online_v": online_v.mean(),
-          "expert_v_max": expert_v.max(),
-          "online_v_max": online_v.max(),
-          "expert_v_min": expert_v.min(),
-          "online_v_min": online_v.min(),
       }
       return expert_loss + value_reg + agent_loss, metrics
 
@@ -398,29 +370,9 @@ class ProximalPointConfig(SoftImitationConfig):
           "online_reward": online_r.mean(),
           "value_reg": value_reg,
           "function_reg": function_reg,
-          "mean_bellman_error": bellman_error.mean(),
           "sq_bellman_error": sq_bellman_error,
-          "rms_bellman_error": rms_bellman_error,
           "is_bellman_error": is_bellman_error,
           "ess": ess,
-          "expert_q": expert_q.mean(),
-          "online_q": online_q.mean(),
-          "expert_v": expert_v.mean(),
-          "online_v": online_v.mean(),
-          "expert_q_max": expert_q.max(),
-          "online_q_max": online_q.max(),
-          "expert_q_min": expert_q.min(),
-          "online_q_min": online_q.min(),
-          "expert_reward_max": expert_reward.max(),
-          "online_reward_max": online_r.max(),
-          "expert_reward_min": expert_reward.min(),
-          "online_reward_min": online_r.min(),
-          "expert_v_max": expert_v.max(),
-          "online_v_max": online_v.max(),
-          "expert_v_min": expert_v.min(),
-          "online_v_min": online_v.min(),
-          "expert_discount": expert_d.mean(),
-          "online_discount": online_d.mean(),
       }
       return (
           -expert_r_mean + is_bellman_error + value_reg + function_reg,
@@ -459,6 +411,7 @@ class ProximalPointConfig(SoftImitationConfig):
 class CoherentConfig(SoftImitationConfig):
   """Coherent soft imitation learning."""
 
+  alpha: float # temperature used in the coherent reward
   reward_scaling: float = 1.0
   scale_factor: float = 1.0  # Scaling of online reward regularization.
   grad_norm_sf: float = 1.0  # Critic action Jacobian regularization.
@@ -476,18 +429,9 @@ class CoherentConfig(SoftImitationConfig):
         online_transitions: types.Transition,
         key: jax.Array,
     ) -> AuxLoss:
-      key_cr, key_er, key_fv, key_or = random.split(key, 4)
+      key_er, key_fv, key_or = random.split(key, 3)
       combined_transition = concatenate_transitions(
           demonstration_transitions, online_transitions
-      )
-      reward = lax.stop_gradient(
-          reward_fn(
-              combined_transition.observation,
-              combined_transition.action,
-              combined_transition.next_observation,
-              combined_transition.discount,
-              key_cr,
-          )
       )
 
       online_reward = reward_fn(
@@ -505,6 +449,9 @@ class CoherentConfig(SoftImitationConfig):
           online_transitions.discount,
           key_er,
       )
+
+      reward = lax.stop_gradient(jnp.concatenate(
+        (expert_reward, online_reward), axis=0))
 
       state_action_value = state_action_value_fn(
           combined_transition.observation, combined_transition.action
@@ -524,28 +471,11 @@ class CoherentConfig(SoftImitationConfig):
       sbe = (bellman_error**2).mean()
       be = bellman_error.mean()
 
-      expert_q = state_action_value_fn(
-          demonstration_transitions.observation,
-          demonstration_transitions.action,
-      )
-
-      expert_future_value = value_fn(
-          demonstration_transitions.next_observation, key_fv
-      )
-      online_q = state_action_value_fn(
-          online_transitions.observation, online_transitions.action
-      )
-
-      online_future_value = value_fn(
-          online_transitions.next_observation, key_fv
-      )
-
-      imp_expert_reward = expert_q - discount * expert_future_value
-      imp_online_reward = online_q - discount * online_future_value
       # The mean expert reward corresponse to maximizing BC likelihood + const.,
       # minimizing the online reward corresponds to minimizing KL to prior.
       # Use an unbiased KL estimator that can never be negative.al
       expert_reward_mean = expert_reward.mean()  # + imp_expert_reward.mean()
+
       # In some cases the online reward can go as low as -50
       # even when the mean is positive. To be robust to these outliers, we just
       # clip the negative online rewards, as the role of this term is to
@@ -555,16 +485,17 @@ class CoherentConfig(SoftImitationConfig):
         online_log_ratio = online_reward + self.reward_scaling * MAX_REWARD
       else:
         online_log_ratio = online_reward
+      safe_online_log_ratio = jnp.maximum(online_log_ratio, -5.0)
+      # the estimator is log r + 1/r - 1, and the reward is alpha log r
       policy_kl_est = (
-          (jnp.exp(lax.clamp(-1e3, -online_log_ratio, 5.0)) - 1.0)
-          + online_log_ratio
+          jnp.exp(-safe_online_log_ratio) - 1. + online_log_ratio
       ).mean()
 
       def non_batch_state_action_value_fn(s, a):
         batch_s = tree.map_structure(lambda f: f[None, ...], s)
         return state_action_value_fn(batch_s, a[None, ...])[0]
       dqda = jax.vmap(
-          jax.jacfwd(non_batch_state_action_value_fn, argnums=1), in_axes=(0))
+          jax.jacrev(non_batch_state_action_value_fn, argnums=1), in_axes=(0))
       grads = dqda(demonstration_transitions.observation,
                    demonstration_transitions.action)
       grad_norm = jnp.sqrt((grads**2).sum(axis=1).mean())
@@ -575,36 +506,11 @@ class CoherentConfig(SoftImitationConfig):
         loss += self.scale_factor * policy_kl_est
       loss += self.grad_norm_sf * grad_norm
 
-      # Diagnostics.
-      expert_target_q = expert_reward + discount * expert_future_value
-      expert_sq_bellman_error = ((expert_target_q - expert_q) ** 2).mean()
-      online_target_q = online_reward + discount * online_future_value
-      online_sq_bellman_error = ((online_target_q - online_q) ** 2).mean()
-
       metrics = {
           "critic_action_grad_norm": grad_norm,
           "sq_bellman_error": sbe,
           "expert_reward": expert_reward.mean(),
           "online_reward": online_reward.mean(),
-          "expert_q": expert_q.mean(),
-          "online_q": online_q.mean(),
-          "expert_q_max": expert_q.max(),
-          "online_q_max": online_q.max(),
-          "expert_q_min": expert_q.min(),
-          "online_q_min": online_q.min(),
-          "expert_reward_max": expert_reward.max(),
-          "online_reward_max": online_reward.max(),
-          "expert_reward_min": expert_reward.min(),
-          "online_reward_min": online_reward.min(),
-          "imp_expert_reward": imp_expert_reward.mean(),
-          "imp_online_reward": imp_online_reward.mean(),
-          "expert_sq_bellman_error": expert_sq_bellman_error,
-          "online_sq_bellman_error": online_sq_bellman_error,
-          "bellman_error": be,
-          "expert_target_q": expert_target_q.mean(),
-          "online_target_q": online_target_q.mean(),
-          "expert_future_value": expert_future_value.mean(),
-          "online_future_value": online_future_value.mean(),
           "kl_est": policy_kl_est,
       }
       return loss, metrics
@@ -612,7 +518,7 @@ class CoherentConfig(SoftImitationConfig):
     return objective
 
   def reward_factory(self) -> RewardFact:
-    """PC-IRL's reward function is policy-derived."""
+    """CSIL's reward function is policy-derived."""
 
     def reward_factory_(
         state_action_reward: StateActionFunc,

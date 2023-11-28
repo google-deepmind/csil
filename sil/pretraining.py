@@ -35,7 +35,7 @@ import optax
 import tensorflow_probability.substrates.jax as tfp
 import tree
 
-from csil.sil import config
+from sil import config
 
 tfd = tfp.distributions
 
@@ -93,31 +93,6 @@ def mse(action_dimension: int) -> ExtendedBCLossWithAux:
     return mean_sq_error, metrics
 
   return loss, no_param_change, no_param_change
-
-
-@jax.jit
-def multivariate_normal_tril_kl(
-    loc1: jnp.ndarray,
-    scale1: jnp.ndarray,
-    loc2: jnp.ndarray,
-    scale2: jnp.ndarray,
-) -> jnp.ndarray:
-  """KL divergence between two MVNs, parameterized by the covariance Cholesky."""
-  dim = loc1.shape[0]
-  diff_loc = loc2 - loc1
-  # \log|S| = log\Pi\diag(L)**2 = 2\sum\log\diag(L)
-  log_det_ratio = 2 * (
-      jnp.log(jnp.diag(scale2)).sum() - jnp.log(jnp.diag(scale1)).sum()
-  )
-  # trace(inv(S2) @ S1) = trace(inv(L2.T) @ inv(L2) @ L1 @ L1.T)
-  # = trace(L1.T  @ inv(L2.T) @ inv(L2) @ L1) = trace(M.T @ M)
-  # M = inv(L2) @ L1
-  scale2_inv_scale1_m = jnp.linalg.solve(scale2, scale1)
-  trace_ratio = jnp.trace(scale2_inv_scale1_m.T @ scale2_inv_scale1_m)
-  # d.T @ inv(S) @ d = d.T @ inv(L.T) @ inv(L) @ d = v.T @ v, v = inv(L) @ d
-  mdv = jnp.linalg.solve(scale2, diff_loc)
-  md = mdv.T @ mdv
-  return 0.5 * (log_det_ratio + trace_ratio + md - dim)
 
 
 def faithful_loss(action_dimension: int) -> ExtendedBCLossWithAux:
@@ -342,6 +317,7 @@ def behavioural_cloning_pretraining(
     loss: config.Losses = config.Losses.FAITHFUL,
     num_steps: int = 40_000,
     learning_rate: float = 1e-4,
+    logger: Optional[loggers.Logger] = None,
     name: str = "",
 ) -> networks_lib.Params:
   """Trains the policy and returns the params single-threaded training loop.
@@ -355,14 +331,15 @@ def behavioural_cloning_pretraining(
     loss: loss type for pretraining (e.g. MSE, log likelihood, ...)
     num_steps: Number of training steps.
     learning_rate: Used for regression.
-    name: used for logger
+    logger: Optional external object for logging.
+    name: Name used for logger.
 
   Returns:
     The trained network params.
   """
   key = random.PRNGKey(seed)
 
-  logger = experiment_utils.make_experiment_logger(f"pretrainer_policy{name}")
+  logger = logger or experiment_utils.make_experiment_logger(f"pretrainer_policy{name}")
 
   # Train using log likelihood.
   n_actions = np.prod(env_spec.actions.shape)
@@ -435,6 +412,7 @@ def critic_pretraining(
     num_steps: int = 10_000,
     learning_rate: float = 5e-3,
     counter: Optional[counting.Counter] = None,
+    logger: Optional[loggers.Logger] = None,
 ) -> networks_lib.Params:
   """Pretrain the critic using a SARSA loss.
 
@@ -449,6 +427,7 @@ def critic_pretraining(
    num_steps: number of update steps
    learning_rate: learning rate of optimizer
    counter: used for logging
+   logger: Optional external object for logging.
 
   Returns:
     Trained critic params.
@@ -538,7 +517,7 @@ def critic_pretraining(
   counter = counter or counting.Counter(
       prefix="pretrainer_critic", time_delta=0.0
   )
-  logger = loggers.make_default_logger(
+  logger = logger or loggers.make_default_logger(
       "pretrainer_critic",
       asynchronous=False,
       serialize_fn=utils.fetch_devicearray,

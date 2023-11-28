@@ -37,9 +37,9 @@ import optax
 import reverb
 from reverb import rate_limiters
 
-from csil.sil import config as sil_config
-from csil.sil import learning
-from csil.sil import networks as sil_networks
+from sil import config as sil_config
+from sil import learning
+from sil import networks as sil_networks
 
 
 class SILBuilder(
@@ -82,6 +82,13 @@ class SILBuilder(
     critic_loss = self._config.imitation.critic_loss_factory()
     reward_factory = self._config.imitation.reward_factory()
 
+    n_policy_pretrainers = (len(self._config.policy_pretraining)
+                            if self._config.policy_pretraining else 0)
+    policy_pretraining_loggers = [
+      logger_fn(f'pretrainer_policy{i}')
+      for i in range(n_policy_pretrainers)
+    ]
+
     return learning.SILLearner(
         networks=networks,
         critic_loss_def=critic_loss,
@@ -103,7 +110,9 @@ class SILBuilder(
         actor_bc_loss=self._config.actor_bc_loss,
         policy_pretraining=self._config.policy_pretraining,
         critic_pretraining=self._config.critic_pretraining,
-        logger=logger_fn('learner'),
+        learner_logger=logger_fn('learner'),
+        policy_pretraining_loggers=policy_pretraining_loggers,
+        critic_pretraining_logger=logger_fn('pretrainer_critic'),
         counter=counter,
     )
 
