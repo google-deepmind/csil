@@ -20,7 +20,7 @@ orbax<=0.1.7
 patchelf
 rlds
 tabulate
-tensorflow==2.8.0
+tensorflow==2.12.1
 tensorflow-datasets==4.6.0
 tensorflow_probability==0.15.0
 tqdm
